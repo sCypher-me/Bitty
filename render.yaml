@@ -1,0 +1,111 @@
+services:
+  - type: keyvalue
+    name: bitty-redis
+    plan: free
+    ipAllowList: []
+    maxmemoryPolicy: noeviction
+
+  - type: web
+    name: bitty-api
+    runtime: docker
+    rootDir: apps/api
+    dockerfilePath: ./Dockerfile
+    dockerCommand: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    plan: free
+    healthCheckPath: /ready
+    maxShutdownDelaySeconds: 30
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: bitty-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: bitty-redis
+          property: connectionString
+      - key: APP_SECRET
+        generateValue: true
+      - key: ENCRYPTION_MASTER_KEY
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: EMBEDDED_WORKER_ENABLED
+        value: "false"
+      - key: REAL_TRADING_ENABLED
+        value: "false"
+
+  - type: worker
+    name: bitty-worker
+    runtime: docker
+    rootDir: apps/api
+    dockerfilePath: ./Dockerfile
+    dockerCommand: celery -A app.worker.celery worker -l INFO --concurrency=1
+    maxShutdownDelaySeconds: 60
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: bitty-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: bitty-redis
+          property: connectionString
+      - key: APP_SECRET
+        sync: false
+      - key: ENCRYPTION_MASTER_KEY
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: EMBEDDED_WORKER_ENABLED
+        value: "false"
+      - key: REAL_TRADING_ENABLED
+        value: "false"
+
+  - type: worker
+    name: bitty-scheduler
+    runtime: docker
+    rootDir: apps/api
+    dockerfilePath: ./Dockerfile
+    dockerCommand: celery -A app.worker.celery beat -l INFO
+    maxShutdownDelaySeconds: 30
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: bitty-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: bitty-redis
+          property: connectionString
+      - key: APP_SECRET
+        sync: false
+      - key: ENCRYPTION_MASTER_KEY
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: EMBEDDED_WORKER_ENABLED
+        value: "false"
+      - key: REAL_TRADING_ENABLED
+        value: "false"
+
+databases:
+  - name: bitty-db
+    plan: free
+    databaseName: bitty
+    user: bitty
+    ipAllowList: []

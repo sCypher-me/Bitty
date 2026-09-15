@@ -1,0 +1,60 @@
+x-api-env: &api-env
+  APP_ENV: ${APP_ENV:-development}
+  DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://cryptobot:cryptobot@postgres:5432/cryptobot}
+  REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+  APP_SECRET: ${APP_SECRET:-dev-only-secret-change-before-production}
+  ENCRYPTION_MASTER_KEY: ${ENCRYPTION_MASTER_KEY:-}
+  FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+  BINANCE_BASE_URL: ${BINANCE_BASE_URL:-https://api.binance.com}
+  BINANCE_TESTNET_BASE_URL: ${BINANCE_TESTNET_BASE_URL:-https://testnet.binance.vision}
+  BINANCE_RECV_WINDOW_MS: ${BINANCE_RECV_WINDOW_MS:-5000}
+  MERCADO_BITCOIN_BASE_URL: ${MERCADO_BITCOIN_BASE_URL:-https://api.mercadobitcoin.net/api/v4}
+  REAL_TRADING_ENABLED: "false"
+  COOKIE_SECURE: ${COOKIE_SECURE:-false}
+  ACCESS_TOKEN_MINUTES: ${ACCESS_TOKEN_MINUTES:-15}
+  REFRESH_TOKEN_DAYS: ${REFRESH_TOKEN_DAYS:-30}
+  EMBEDDED_WORKER_ENABLED: "false"
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: cryptobot
+      POSTGRES_PASSWORD: cryptobot
+      POSTGRES_DB: cryptobot
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U cryptobot]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes: [redis_data:/data]
+  api:
+    build: ./apps/api
+    environment: *api-env
+    ports: ["8000:8000"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_started}
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+  worker:
+    build: ./apps/api
+    environment: *api-env
+    depends_on: [api, redis]
+    command: celery -A app.worker.celery worker -l INFO
+  scheduler:
+    build: ./apps/api
+    environment: *api-env
+    depends_on: [worker]
+    command: celery -A app.worker.celery beat -l INFO
+  web:
+    build: ./apps/web
+    environment:
+      API_INTERNAL_URL: http://api:8000
+    ports: ["3000:3000"]
+    depends_on: [api]
+volumes:
+  postgres_data:
+  redis_data:

@@ -1,0 +1,20 @@
+{
+  "name": "bitty-mobile",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "android:add": "cap add android",
+    "android:sync": "cap sync android",
+    "android:open": "cap open android",
+    "android:build:debug": "cap sync android && cd android && gradlew.bat assembleDebug"
+  },
+  "dependencies": {
+    "@capacitor/android": "8.5.2",
+    "@capacitor/core": "8.5.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.5.2",
+    "@types/node": "24.3.1",
+    "typescript": "5.9.2"
+  }
+}

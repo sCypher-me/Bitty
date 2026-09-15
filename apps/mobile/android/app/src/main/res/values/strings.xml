@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Bitty</string>
+    <string name="title_activity_main">Bitty</string>
+    <string name="package_name">com.julio.bitty</string>
+    <string name="custom_url_scheme">com.julio.bitty</string>
+</resources>
