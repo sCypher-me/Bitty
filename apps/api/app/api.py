@@ -191,6 +191,7 @@ async def dashboard(bot_id:UUID,user:User=Depends(current_user),db:AsyncSession=
     config=await db.scalar(select(BotConfig).where(BotConfig.bot_id==bot.id))
     positions=list((await db.scalars(select(Position).where(Position.bot_id==bot.id,Position.user_id==user.id))).all())
     orders=list((await db.scalars(select(Order).where(Order.bot_id==bot.id,Order.user_id==user.id).order_by(Order.created_at.desc()).limit(25))).all())
+    signals=list((await db.scalars(select(Signal).where(Signal.bot_id==bot.id).order_by(Signal.timestamp.desc()).limit(6))).all())
     snapshots=list((await db.scalars(select(PortfolioSnapshot).where(PortfolioSnapshot.bot_id==bot.id).order_by(PortfolioSnapshot.created_at.desc()).limit(48))).all())
     market_status="LIVE"
     try:
@@ -215,6 +216,7 @@ async def dashboard(bot_id:UUID,user:User=Depends(current_user),db:AsyncSession=
         "market":[{"symbol":row["symbol"].replace("-","/"),"bid":str(row["bid"]),"ask":str(row["ask"]),"last":str(row["last"]),"volume":str(row["volume"])} for row in market_rows],
         "equity_curve":curve,
         "positions":[{"symbol":p.symbol,"quantity":str(p.quantity),"average_cost":str(p.average_cost),"realized_pnl":str(p.realized_pnl)} for p in positions],
+        "signals":[{"symbol":s.symbol,"action":s.action,"confidence":str(s.confidence),"reason":s.reason,"timestamp":s.timestamp.isoformat(),"outcome":("Aguardando uma posição comprada para vender" if s.action.value=="SELL" and not any(p.symbol==s.symbol and p.quantity>0 for p in positions) else "Mercado analisado; proteções mantidas" if s.action.value=="HOLD" else "Sinal encaminhado às barreiras de risco")} for s in signals],
         "orders":[{"symbol":o.symbol,"side":o.side,"status":o.status,"quantity":str(o.quantity),"price":str(o.average_price or 0),"fees":str(o.fees),"created_at":o.created_at.isoformat()} for o in orders],
         "disclaimer":"Resultados simulados não garantem resultados futuros. Dados públicos: Mercado Bitcoin.",
     }

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal as D
 from sqlalchemy import select
@@ -9,7 +10,15 @@ from app.models import Bot,BotConfig,BotStatus,Notification,Order,OrderStatus,Po
 from app.trading import MeanReversionStrategy,OrderManager,PaperExecutionAdapter,RiskConfig,RiskManager,RiskState,SignalAction,deterministic_order_id
 
 _bot_locks:dict[str,asyncio.Lock]={}
+logger=logging.getLogger(__name__)
 def bot_cycle_lock(bot_id)->asyncio.Lock: return _bot_locks.setdefault(str(bot_id),asyncio.Lock())
+
+def mark_market_unavailable(db:AsyncSession,bot:Bot)->None:
+    """Enter reconnecting without creating the same warning every worker cycle."""
+    was_reconnecting=bot.status==BotStatus.RECONNECTING
+    bot.status=BotStatus.RECONNECTING
+    if not was_reconnecting:
+        db.add(Notification(user_id=bot.user_id,level="WARNING",event="market_data_unavailable",message="Cotações do Mercado Bitcoin indisponíveis; ciclo ignorado sem enviar ordens."))
 
 async def reconcile_bot(db:AsyncSession,bot:Bot)->bool:
     unresolved=list((await db.scalars(select(Order).where(Order.bot_id==bot.id,Order.status.in_([OrderStatus.SUBMITTING,OrderStatus.SUBMITTED,OrderStatus.PARTIALLY_FILLED])))).all())
@@ -29,11 +38,12 @@ async def execute_bot_cycle(db:AsyncSession,bot:Bot)->str:
     try:
         ticker_rows=await market_data.get_tickers(config.symbols)
         tickers={row["symbol"].replace("-","/"):row for row in ticker_rows}
-    except Exception:
-        bot.status=BotStatus.RECONNECTING
-        db.add(Notification(user_id=bot.user_id,level="WARNING",event="market_data_unavailable",message="Cotações do Mercado Bitcoin indisponíveis; ciclo ignorado sem enviar ordens."))
+    except Exception as exc:
+        logger.warning("Ticker fetch failed for paper bot %s: %s: %s",bot.id,type(exc).__name__,exc)
+        mark_market_unavailable(db,bot)
         return "MARKET_UNAVAILABLE"
-    if bot.status==BotStatus.RECONNECTING: bot.status=BotStatus.ACTIVE
+    recovered=bot.status==BotStatus.RECONNECTING
+    successful_symbols=0
     for symbol in config.symbols:
         await db.refresh(bot)
         if bot.status not in {BotStatus.ACTIVE,BotStatus.RECONNECTING} or not bot.reconciled:
@@ -42,8 +52,10 @@ async def execute_bot_cycle(db:AsyncSession,bot:Bot)->str:
         try:
             candles=await market_data.get_candles(symbol)
             tick=market_data.tick(tickers[symbol],candles)
-        except (MercadoBitcoinError,KeyError,ValueError):
+        except (MercadoBitcoinError,KeyError,ValueError) as exc:
+            logger.warning("Candle processing failed for paper bot %s (%s): %s: %s",bot.id,symbol,type(exc).__name__,exc)
             continue
+        successful_symbols+=1
         requested=D(config.capital)*D(config.max_trade_pct); signal=strategy.evaluate(symbol,candles,tick,requested)
         signal_row=SignalModel(bot_id=bot.id,symbol=symbol,timestamp=signal.timestamp,action=signal.action.value,confidence=signal.confidence,suggested_amount=signal.suggested_amount,reason=signal.reason,strategy_name=signal.strategy_name,strategy_version=signal.strategy_version,indicators=signal.indicators); db.add(signal_row); await db.flush()
         if signal.action==SignalAction.HOLD: continue
@@ -70,6 +82,12 @@ async def execute_bot_cycle(db:AsyncSession,bot:Bot)->str:
             pnl=order.filled_quantity*order.average_price-order.filled_quantity*position.average_cost-order.fees; position.quantity-=order.filled_quantity; position.realized_pnl+=pnl; position.fees+=order.fees
             if position.quantity==0: position.average_cost=D("0")
         await db.flush(); invested=sum((p.quantity*(p.average_cost or D("0")) for p in positions),D("0")); realized=sum((p.realized_pnl for p in positions),D("0")); cash=D(config.capital)+realized-invested; equity=cash+sum((p.quantity*(tick.last if p.symbol==symbol else p.average_cost) for p in positions),D("0")); db.add(PortfolioSnapshot(bot_id=bot.id,cash=cash,invested=invested,equity=equity,drawdown=max(D("0"),(D(config.capital)-equity)/D(config.capital))))
+    if successful_symbols==0:
+        mark_market_unavailable(db,bot)
+        return "MARKET_UNAVAILABLE"
+    if recovered:
+        bot.status=BotStatus.ACTIVE
+        db.add(Notification(user_id=bot.user_id,level="INFO",event="market_data_recovered",message="Cotações do Mercado Bitcoin restabelecidas; Paper Bot retomado."))
     prices={symbol:D(row["last"]) for symbol,row in tickers.items()}
     cost_basis=sum((p.quantity*(p.average_cost or D("0")) for p in positions),D("0")); realized=sum((p.realized_pnl for p in positions),D("0")); cash=D(config.capital)+realized-cost_basis; market_value=sum((p.quantity*prices.get(p.symbol,p.average_cost) for p in positions),D("0")); equity=cash+market_value
     db.add(PortfolioSnapshot(bot_id=bot.id,cash=cash,invested=market_value,equity=equity,drawdown=max(D("0"),(D(config.capital)-equity)/D(config.capital))))
