@@ -30,3 +30,21 @@ $env:GRADLE_USER_HOME="$env:USERPROFILE\.gradle"
 ```
 
 O APK de teste é criado em `apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk`. Ele bloqueia HTTP aberto e restringe a navegação ao host configurado. Para uso permanente, gere e proteja fora do Git uma chave de assinatura de release. Não declare o APK pronto antes de testar login, refresh, logout, Paper Bot e sincronização contra produção em aparelho/emulador.
+
+## Modo notebook na mesma rede Wi-Fi
+
+Para operar sem hospedagem paga, o notebook pode ser o servidor central. Inicie o Bitty expondo somente o frontend na rede local:
+
+```powershell
+.\scripts\start-bitty.ps1 -LanAddress 192.168.1.3
+```
+
+Gere o APK apontando explicitamente para o endereço privado do notebook:
+
+```powershell
+.\scripts\build-lan-apk.ps1 -LanAddress 192.168.1.3
+```
+
+O arquivo será criado em `outputs/Bitty-LAN-debug.apk`. O celular precisa estar na mesma rede Wi-Fi e o endereço do notebook deve permanecer estável. HTTP sem TLS é permitido somente neste build LAN explícito; builds públicos continuam exigindo HTTPS.
+
+Esse APK LAN destina-se exclusivamente ao Paper Bot em uma rede doméstica confiável. Não digite senha reutilizada nem credenciais do Mercado Bitcoin pelo celular enquanto a conexão for HTTP. Cadastre credenciais somente pelo próprio notebook em `http://127.0.0.1:3000`; para uso remoto ou financeiro no Android, configure primeiro uma origem HTTPS privada, como Tailscale Serve.

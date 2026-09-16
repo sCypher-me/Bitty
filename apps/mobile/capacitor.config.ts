@@ -1,8 +1,11 @@
 import type { CapacitorConfig } from "@capacitor/cli";
 
 const productionUrl = process.env.BITTY_APP_URL?.replace(/\/$/, "");
-if (productionUrl && !productionUrl.startsWith("https://")) {
-  throw new Error("BITTY_APP_URL must use HTTPS");
+const allowHttpLan = process.env.BITTY_ALLOW_HTTP_LAN === "true";
+const isHttps = productionUrl?.startsWith("https://") ?? false;
+const isExplicitLanHttp = Boolean(productionUrl?.startsWith("http://") && allowHttpLan);
+if (productionUrl && !isHttps && !isExplicitLanHttp) {
+  throw new Error("BITTY_APP_URL must use HTTPS, unless BITTY_ALLOW_HTTP_LAN=true is explicitly set for a trusted local network");
 }
 const productionHost = productionUrl ? new URL(productionUrl).hostname : undefined;
 
@@ -12,8 +15,8 @@ const config: CapacitorConfig = {
   webDir: "www",
   server: {
     ...(productionUrl ? { url: productionUrl } : {}),
-    androidScheme: "https",
-    cleartext: false,
+    androidScheme: isExplicitLanHttp ? "http" : "https",
+    cleartext: isExplicitLanHttp,
     allowNavigation: productionHost ? [productionHost] : ["*.ts.net"],
   },
   android: { buildOptions: { releaseType: "APK" } },
