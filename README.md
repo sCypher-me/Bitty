@@ -58,3 +58,16 @@ O worker Paper ignora explicitamente bots que não estejam em modo `PAPER`. O ex
 4. Como não existe Testnet pública, o executor Live permanece bloqueado até uma validação manual separada com limite de capital, confirmação explícita e reconciliação de ordens.
 
 O projeto não implementa endpoints de depósito, transferência ou saque do Mercado Bitcoin.
+
+### Executor real inicial (opt-in)
+
+O executor real fica desligado por padrão e exige `REAL_TRADING_ENABLED=true`, diagnóstico aprovado e a frase exata `ATIVAR TRADING REAL`. A primeira versão aceita apenas BTC/BRL e capital de até R$ 100, com:
+
+- no máximo R$ 20 por ordem e R$ 50 preservados em BRL;
+- stop-loss de 2% e bloqueio após R$ 2 de perda;
+- taxas individuais maker/taker consultadas na conta antes da ativação;
+- compra bloqueada quando o ganho estimado não cobre duas taxas taker, spread e 0,5% de margem;
+- intenção persistida antes do envio, `externalId` idempotente e pausa em resultado incerto;
+- desativação sem venda forçada da posição existente.
+
+Nenhum mecanismo garante lucro ou preço de execução. Ordens a mercado podem sofrer slippage.

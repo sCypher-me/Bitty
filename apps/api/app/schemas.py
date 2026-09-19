@@ -46,6 +46,10 @@ class MercadoBitcoinConnectIn(BaseModel):
 class RealCapitalIn(BaseModel):
     amount_brl: Decimal = Field(ge=Decimal("10.00"), le=Decimal("1000.00"), decimal_places=2)
 
+class LiveActivationIn(BaseModel):
+    confirmation: str
+    symbol: Literal["BTC/BRL"] = "BTC/BRL"
+
 class PaperResetIn(BaseModel):
     initial_capital_brl: Decimal = Field(ge=Decimal("10.00"), le=Decimal("1000000.00"), decimal_places=2)
 

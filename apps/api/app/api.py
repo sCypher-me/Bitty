@@ -15,8 +15,8 @@ from app.db import SessionLocal, get_db
 from app.dependencies import current_user, is_expired
 from app.engine import bot_cycle_lock, reconcile_bot
 from app.market_data import market_data
-from app.models import AuditLog, Backtest, Bot, BotConfig, BotStatus, DeviceSession, ExchangeAccount, Notification, Order, OrderFill, PortfolioSnapshot, Position, RiskDecision, Signal, User
-from app.schemas import BacktestIn, BinanceConnectIn, BinanceOrderTestIn, BotCreate, BotOut, LoginIn, MercadoBitcoinConnectIn, PaperResetIn, PaperRiskProfileIn, RealCapitalIn, RegisterIn, UserOut
+from app.models import AuditLog, Backtest, Bot, BotConfig, BotStatus, DeviceSession, ExchangeAccount, Notification, Order, OrderFill, OrderStatus, PortfolioSnapshot, Position, RiskDecision, Signal, User
+from app.schemas import BacktestIn, BinanceConnectIn, BinanceOrderTestIn, BotCreate, BotOut, LiveActivationIn, LoginIn, MercadoBitcoinConnectIn, PaperResetIn, PaperRiskProfileIn, RealCapitalIn, RegisterIn, UserOut
 from app.security import create_access_token, decode_access_token, decrypt_secret, encrypt_secret, hash_password, hash_refresh_token, new_refresh_token, verify_password
 
 router=APIRouter(prefix="/api/v1")
@@ -334,13 +334,13 @@ async def mercado_bitcoin_preflight(bot_id:UUID,user:User=Depends(current_user),
         "no_open_orders":len(open_orders)==0,
         "paper_bot_stopped":bot.status in {BotStatus.STOPPED,BotStatus.PAUSED},
         "server_live_enabled":settings.real_trading_enabled,
-        "live_executor_enabled":False,
+        "live_executor_enabled":True,
     }
     blockers=[]
     if not checks["balance_covers_capital"]: blockers.append("O saldo BRL disponível é menor que o capital configurado no bot.")
     if not checks["no_open_orders"]: blockers.append("Existem ordens abertas no Mercado Bitcoin; elas precisam ser reconciliadas antes de qualquer ativação.")
     if not checks["paper_bot_stopped"]: blockers.append("Pause ou pare o bot Paper antes de preparar o modo real.")
-    blockers.append("O executor real permanece desabilitado no servidor e nenhuma ordem foi enviada.")
+    if not checks["server_live_enabled"]: blockers.append("O executor real permanece desabilitado no servidor; nenhuma ordem pode ser enviada.")
     db.add(AuditLog(user_id=user.id,event="mercado_bitcoin_preflight",entity_id=str(account.id),details={"bot_id":str(bot.id),"symbols":config.symbols,"open_orders":len(open_orders),"passed":all(checks[key] for key in ("credentials_valid","account_readable","markets_available","rules_loaded","fees_loaded","balance_covers_capital","no_open_orders","paper_bot_stopped"))}))
     await db.commit()
     return {
@@ -352,7 +352,7 @@ async def mercado_bitcoin_preflight(bot_id:UUID,user:User=Depends(current_user),
         "checks":checks,
         "markets":market_rows,
         "blockers":blockers,
-        "ready_for_live":False,
+        "ready_for_live":all(checks[key] for key in ("credentials_valid","account_readable","markets_available","rules_loaded","fees_loaded","balance_covers_capital","no_open_orders","paper_bot_stopped","server_live_enabled","live_executor_enabled")),
     }
 
 @bots.put("/{bot_id}/real-capital")
@@ -367,15 +367,53 @@ async def set_real_capital(bot_id:UUID,body:RealCapitalIn,user:User=Depends(curr
     config.advanced=advanced
     db.add(AuditLog(user_id=user.id,event="real_capital_limit_changed",entity_id=str(bot.id),details={"previous_brl":previous,"new_brl":str(amount),"moves_money":False}))
     await db.commit()
-    return {"amount_brl":str(amount),"moves_money":False,"real_trading_enabled":False}
+    return {"amount_brl":str(amount),"moves_money":False,"real_trading_enabled":settings.real_trading_enabled}
 
 @bots.get("/{bot_id}/real-readiness")
 async def real_readiness(bot_id:UUID,user:User=Depends(current_user),db:AsyncSession=Depends(get_db)):
     bot=await owned_bot(bot_id,user,db)
     accounts=list((await db.scalars(select(ExchangeAccount).where(ExchangeAccount.user_id==user.id,ExchangeAccount.exchange=="BINANCE"))).all())
     mercado_bitcoin=await db.scalar(select(ExchangeAccount).where(ExchangeAccount.user_id==user.id,ExchangeAccount.exchange=="MERCADO_BITCOIN",ExchangeAccount.mode=="LIVE"))
-    checks={"bot_stopped":bot.status in {BotStatus.STOPPED,BotStatus.PAUSED},"encryption_configured":bool(settings.encryption_master_key),"testnet_connected":any(a.mode=="TESTNET" and a.encrypted_credentials for a in accounts),"live_connected":any(a.mode=="LIVE" and a.encrypted_credentials for a in accounts),"mercado_bitcoin_connected":bool(mercado_bitcoin and mercado_bitcoin.encrypted_credentials),"server_live_enabled":settings.real_trading_enabled,"live_executor_enabled":False}
+    checks={"bot_stopped":bot.status in {BotStatus.STOPPED,BotStatus.PAUSED},"encryption_configured":bool(settings.encryption_master_key),"testnet_connected":any(a.mode=="TESTNET" and a.encrypted_credentials for a in accounts),"live_connected":any(a.mode=="LIVE" and a.encrypted_credentials for a in accounts),"mercado_bitcoin_connected":bool(mercado_bitcoin and mercado_bitcoin.encrypted_credentials),"server_live_enabled":settings.real_trading_enabled,"live_executor_enabled":True}
     return {"ready_for_testnet":all(checks[key] for key in ("bot_stopped","encryption_configured","testnet_connected")),"ready_for_live":all(checks[key] for key in ("bot_stopped","encryption_configured","mercado_bitcoin_connected","server_live_enabled","live_executor_enabled")),"checks":checks,"next_step":"Conecte o Mercado Bitcoin para validar conta, saldo e mercados BRL sem criar ordens."}
+
+@bots.post("/{bot_id}/live/activate",response_model=BotOut)
+async def activate_live_bot(bot_id:UUID,body:LiveActivationIn,user:User=Depends(current_user),db:AsyncSession=Depends(get_db)):
+    bot=await owned_bot(bot_id,user,db)
+    if not settings.real_trading_enabled: raise HTTPException(409,"O executor real ainda está desabilitado no servidor")
+    if body.confirmation!=settings.real_trading_confirmation: raise HTTPException(422,"Digite a frase de confirmação exatamente como exibida")
+    if bot.status not in {BotStatus.STOPPED,BotStatus.PAUSED}: raise HTTPException(409,"Pare o Paper Bot antes de ativar dinheiro real")
+    config=await db.scalar(select(BotConfig).where(BotConfig.bot_id==bot.id))
+    account=await db.scalar(select(ExchangeAccount).where(ExchangeAccount.user_id==user.id,ExchangeAccount.exchange=="MERCADO_BITCOIN",ExchangeAccount.mode=="LIVE"))
+    if not config or not account or not account.encrypted_credentials: raise HTTPException(409,"Conecte e valide a conta do Mercado Bitcoin")
+    live_capital=Decimal(str((config.advanced or {}).get("real_capital_brl","100")))
+    if live_capital>Decimal("100"): raise HTTPException(409,"Esta primeira ativação está limitada a R$ 100")
+    local_position=await db.scalar(select(Position.id).where(Position.bot_id==bot.id,Position.quantity>0).limit(1))
+    unresolved=await db.scalar(select(Order.id).where(Order.bot_id==bot.id,Order.status.in_([OrderStatus.SUBMITTING,OrderStatus.SUBMITTED,OrderStatus.PARTIALLY_FILLED])).limit(1))
+    if local_position or unresolved: raise HTTPException(409,"Zere o teste e reconcilie ordens antes da ativação real")
+    credentials=json.loads(decrypt_secret(account.encrypted_credentials)); adapter=MercadoBitcoinAdapter(credentials["client_id"],credentials["client_secret"],settings.mercado_bitcoin_base_url)
+    try:
+        validation=await adapter.validate_account(); open_orders=await adapter.get_open_orders(validation["account_id"]); rules=(await adapter.get_symbol_rules([body.symbol]))[0]; fees=await adapter.get_trading_fees(validation["account_id"],body.symbol)
+    except MercadoBitcoinError as exc: raise HTTPException(422,str(exc)) from exc
+    if Decimal(validation["brl_available"])<live_capital: raise HTTPException(409,"Saldo BRL insuficiente para o limite real configurado")
+    if open_orders: raise HTTPException(409,"Existem ordens abertas no MB; cancele ou reconcilie antes de ativar")
+    if not rules.get("exchange-traded"): raise HTTPException(409,"BTC/BRL não está disponível para negociação")
+    advanced=dict(config.advanced or {}); advanced.update({"live_armed":True,"live_symbol":body.symbol,"real_capital_brl":str(live_capital),"live_max_order_brl":"20.00","live_reserve_brl":"50.00","live_daily_loss_brl":"2.00","live_max_spread_pct":"0.002","live_edge_buffer_pct":"0.005","live_stop_loss_pct":"0.02","live_taker_fee":str(fees["taker_fee"]),"live_armed_at":datetime.now(timezone.utc).isoformat()}); config.advanced=advanced
+    bot.mode="LIVE"; bot.status=BotStatus.ACTIVE; bot.reconciled=True
+    db.add(AuditLog(user_id=user.id,event="live_trading_activated",entity_id=str(bot.id),details={"capital_brl":str(live_capital),"symbol":body.symbol,"max_order_brl":"20.00","reserve_brl":"50.00","daily_loss_brl":"2.00","taker_fee":str(fees["taker_fee"])})); db.add(Notification(user_id=user.id,level="CRITICAL",event="live_trading_activated",message="Trading real ativado para BTC/BRL com limite total de R$ 100 e até R$ 20 por ordem."))
+    await db.commit(); await db.refresh(bot); return bot
+
+@bots.post("/{bot_id}/live/deactivate",response_model=BotOut)
+async def deactivate_live_bot(bot_id:UUID,user:User=Depends(current_user),db:AsyncSession=Depends(get_db)):
+    bot=await owned_bot(bot_id,user,db)
+    async with bot_cycle_lock(bot.id):
+        config=await db.scalar(select(BotConfig).where(BotConfig.bot_id==bot.id))
+        if config:
+            advanced=dict(config.advanced or {}); advanced["live_armed"]=False; advanced["live_disarmed_at"]=datetime.now(timezone.utc).isoformat(); config.advanced=advanced
+        bot.status=BotStatus.STOPPED; bot.reconciled=False
+        db.add(AuditLog(user_id=user.id,event="live_trading_deactivated",entity_id=str(bot.id),details={"positions_liquidated":False,"open_orders_cancelled":False})); db.add(Notification(user_id=user.id,level="WARNING",event="live_trading_deactivated",message="Trading real desativado. Posições não foram vendidas automaticamente."))
+        await db.commit(); await db.refresh(bot)
+    return bot
 
 @router.get("/market/ticker/{symbol:path}")
 async def ticker(symbol:str,user:User=Depends(current_user)):

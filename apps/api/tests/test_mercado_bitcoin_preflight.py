@@ -5,6 +5,7 @@ import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.api import mercado_bitcoin_preflight, set_real_capital
+from app.config import settings
 from app.db import Base
 from app.models import Bot, BotConfig, BotStatus, ExchangeAccount, User
 from app.schemas import RealCapitalIn
@@ -45,6 +46,7 @@ async def test_preflight_reads_account_rules_and_fees_without_creating_order(mon
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     monkeypatch.setattr("app.api.decrypt_secret", lambda _value: json.dumps({"client_id": "id", "client_secret": "secret"}))
     monkeypatch.setattr("app.api.MercadoBitcoinAdapter", ReadOnlyMercadoBitcoin)
+    monkeypatch.setattr(settings, "real_trading_enabled", False)
     ReadOnlyMercadoBitcoin.created_orders = 0
 
     async with sessions() as db:

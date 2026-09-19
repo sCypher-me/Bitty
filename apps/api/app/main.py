@@ -12,6 +12,7 @@ from app.api import router
 from app.config import settings
 from app.db import SessionLocal
 from app.engine import bot_cycle_lock, execute_bot_cycle, reconcile_bot
+from app.live_engine import execute_live_cycle
 from app.models import Bot, BotStatus
 
 logging.basicConfig(level=logging.INFO,format='{"time":"%(asctime)s","level":"%(levelname)s","message":"%(message)s"}')
@@ -23,11 +24,13 @@ async def lifespan(app:FastAPI):
         while not stop.is_set():
             try:
                 async with SessionLocal() as db:
-                    bots=list((await db.scalars(select(Bot).where(Bot.mode=="PAPER",Bot.status.in_([BotStatus.STARTING,BotStatus.ACTIVE,BotStatus.RECONNECTING])))).all())
+                    bots=list((await db.scalars(select(Bot).where(Bot.status.in_([BotStatus.STARTING,BotStatus.ACTIVE,BotStatus.RECONNECTING])))).all())
                     for bot in bots:
                         if not bot.reconciled: await reconcile_bot(db,bot)
                         elif bot.status in {BotStatus.ACTIVE,BotStatus.RECONNECTING}:
-                            async with bot_cycle_lock(bot.id): await execute_bot_cycle(db,bot)
+                            async with bot_cycle_lock(bot.id):
+                                if bot.mode=="PAPER": await execute_bot_cycle(db,bot)
+                                elif bot.mode=="LIVE": await execute_live_cycle(db,bot)
                     await db.commit()
             except Exception:
                 logging.exception("embedded paper worker cycle failed")

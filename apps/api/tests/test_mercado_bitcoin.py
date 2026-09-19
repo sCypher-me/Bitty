@@ -149,3 +149,21 @@ async def test_order_timeout_reconciles_using_external_id():
         adapter = MercadoBitcoinAdapter("client-value", "secret-value", "https://example.test/api/v4", client)
         result = await adapter.create_limit_order("account-1", "client-order-1", "BTC/BRL", "BUY", D("0.00001"), D("500000"))
     assert result["id"] == "order-1"
+
+
+@pytest.mark.asyncio
+async def test_market_buy_uses_brl_cost_and_external_id():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/oauth2/token"):
+            return httpx.Response(200, json={"access_token": "token", "expires_in": 3600})
+        captured.update(__import__("json").loads(request.content))
+        return httpx.Response(200, json={"orderId": "order-live-1"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await MercadoBitcoinAdapter("client", "secret", "https://example.test/api/v4", client).create_market_order(
+            "account-1", "bitty-live-1", "BTC/BRL", "BUY", D("20.00")
+        )
+    assert result["orderId"] == "order-live-1"
+    assert captured == {"async": False, "externalId": "bitty-live-1", "side": "buy", "type": "market", "cost": 20.0}

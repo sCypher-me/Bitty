@@ -215,6 +215,29 @@ class MercadoBitcoinAdapter:
                 raise MercadoBitcoinAmbiguousOrderError("Ordem não localizada após falha de transporte; operação pausada") from exc
             return existing
 
+    async def create_market_order(self, account_id: str, external_id: str, symbol: str, side: str, amount: Decimal) -> dict[str, Any]:
+        """Submit one idempotent market order; amount is BRL cost for buys and base quantity for sells."""
+        pair = symbol.replace("/", "-").upper()
+        payload: dict[str, Any] = {"async": False, "externalId": external_id, "side": side.lower(), "type": "market"}
+        if side.upper() == "BUY":
+            payload["cost"] = float(amount)
+        else:
+            payload["qty"] = format(amount, "f")
+        try:
+            return await self._request("POST", f"/accounts/{account_id}/{pair}/orders", json=payload)
+        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            try:
+                existing = await self.get_order_by_external_id(account_id, symbol, external_id)
+            except Exception as reconciliation_error:
+                raise MercadoBitcoinAmbiguousOrderError("Resultado da ordem é incerto; pause e reconcilie antes de continuar") from reconciliation_error
+            if existing is None:
+                raise MercadoBitcoinAmbiguousOrderError("Ordem não localizada após falha de transporte; operação pausada") from exc
+            return existing
+
+    async def get_order(self, account_id: str, symbol: str, order_id: str) -> dict[str, Any]:
+        pair = symbol.replace("/", "-").upper()
+        return await self._request("GET", f"/accounts/{account_id}/{pair}/orders/{order_id}")
+
     async def cancel_order(self, account_id: str, symbol: str, order_id: str) -> dict[str, Any]:
         pair = symbol.replace("/", "-").upper()
         return await self._request("DELETE", f"/accounts/{account_id}/{pair}/orders/{order_id}", params={"async": "false"})
